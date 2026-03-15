@@ -1,12 +1,11 @@
-name: CI Build & Release
+name: CI Build & Nightly Release
 
-# 触发条件：push / pull_request / 手动 / 每日夜间构建
 on:
   push:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *" # UTC 03:00 每天夜间构建
+    - cron: "0 3 * * *"  # 每天 UTC 03:00 自动触发
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -14,7 +13,7 @@ env:
 jobs:
 
   # ----------------------
-  # Windows Build Job
+  # Windows 构建
   # ----------------------
   windowsBuild:
     name: Windows Build
@@ -32,7 +31,7 @@ jobs:
       with:
         submodules: true
 
-    - name: Install
+    - name: Install dependencies
       shell: cmd
       run: |
         set CONFIGURATION=${{matrix.CONFIGURATION}}
@@ -49,14 +48,13 @@ jobs:
       run: |
         set CONFIGURATION=${{matrix.CONFIGURATION}}
         set LLVM_VERSION=${{matrix.LLVM_VERSION}}
-        set THIS_DIR=%CD%
         call jancy\ci\github-actions\set-env.bat ${{matrix.TARGET_CPU}}
         call axl\ci\github-actions\build-lua.bat
         mkdir build
         cd build
-        cmake .. %CMAKE_CONFIGURE_FLAGS% || exit
-        cmake --build . %CMAKE_BUILD_FLAGS% || exit
-        ctest --output-on-failure -C %CONFIGURATION% || exit
+        cmake .. %CMAKE_CONFIGURE_FLAGS%
+        cmake --build . %CMAKE_BUILD_FLAGS%
+        ctest --output-on-failure -C %CONFIGURATION%
 
     - name: Package
       shell: cmd
@@ -71,9 +69,8 @@ jobs:
         name: windows-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}
         path: jancy-windows-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}.zip
 
-
   # ----------------------
-  # Linux Build Job
+  # Linux 构建
   # ----------------------
   linuxBuild:
     name: Linux Build
@@ -91,12 +88,12 @@ jobs:
       with:
         submodules: true
 
-    - name: Install Dependencies
+    - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y build-essential cmake ninja-build zip
 
-    - name: Install
+    - name: Install project deps
       shell: bash
       run: |
         export TARGET_CPU=${{matrix.TARGET_CPU}}
@@ -127,9 +124,8 @@ jobs:
         name: linux-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}
         path: dist/jancy-linux-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}.zip
 
-
   # ----------------------
-  # macOS Build Job
+  # macOS 构建
   # ----------------------
   macosBuild:
     name: macOS Build
@@ -147,12 +143,11 @@ jobs:
       with:
         submodules: true
 
-    - name: Install Dependencies
+    - name: Install dependencies
       shell: bash
-      run: |
-        brew install cmake
+      run: brew install cmake
 
-    - name: Install
+    - name: Install project deps
       shell: bash
       run: |
         export LLVM_VERSION=${{matrix.LLVM_VERSION}}
@@ -183,7 +178,6 @@ jobs:
         name: macos-${{matrix.CONFIGURATION}}
         path: dist/jancy-macos-${{matrix.CONFIGURATION}}.zip
 
-
   # ----------------------
   # Release Job
   # ----------------------
@@ -193,12 +187,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Download Artifacts
+    - name: Download all artifacts
       uses: actions/download-artifact@v4
       with:
         path: release-files
 
-    - name: Create Release
+    - name: Create Nightly Release
       uses: softprops/action-gh-release@v2
       with:
         tag_name: nightly

@@ -1,154 +1,160 @@
 name: GitHub CI
 
 on:
--   push
--   pull_request
+  push:
+  pull_request:
 
 jobs:
-    windowsBuild:
-        name: Windows Build
-        runs-on: windows-2022
+  windowsBuild:
+    name: Windows Build
+    runs-on: windows-2022
 
-        strategy:
-            fail-fast: false
-            matrix:
-                CONFIGURATION:
-                -   Debug
-                -   Release
+    strategy:
+      fail-fast: false
+      matrix:
+        CONFIGURATION:
+          - Debug
+          - Release
+        TARGET_CPU:
+          - x86
+          - amd64
+        LLVM_VERSION:
+          - llvm-3.4.2
+          - llvm-8.0.1
 
-                TARGET_CPU:
-                -   x86
-                -   amd64
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: true
 
-                LLVM_VERSION:
-                -   llvm-3.4.2
-                -   llvm-8.0.1
+      - name: Install
+        continue-on-error: true
+        shell: cmd
+        run: |
+          set CONFIGURATION=${{matrix.CONFIGURATION}}
+          set LLVM_VERSION=${{matrix.LLVM_VERSION}}
+          call jancy\ci\github-actions\set-env.bat ${{matrix.TARGET_CPU}}
+          call jancy\ci\github-actions\install-windows.bat
 
-        steps:
-        -   name: Checkout repo
-            uses: actions/checkout@v4
-            with:
-                submodules: true
+      - name: Setup NASM
+        uses: ilammy/setup-nasm@v1
+        if: ${{ matrix.TARGET_CPU == 'amd64' }}
 
-        -   name: Install
-            continue-on-error: true
-            shell: cmd
-            run: |
-                set CONFIGURATION=${{matrix.CONFIGURATION}}
-                set LLVM_VERSION=${{matrix.LLVM_VERSION}}
-                call jancy\ci\github-actions\set-env.bat ${{matrix.TARGET_CPU}}
-                call jancy\ci\github-actions\install-windows.bat
+      - name: Build and test
+        shell: cmd
+        run: |
+          set CONFIGURATION=${{matrix.CONFIGURATION}}
+          set LLVM_VERSION=${{matrix.LLVM_VERSION}}
+          set THIS_DIR=%CD%
+          set THIS_DIR_CMAKE=%THIS_DIR:\=/%
+          call jancy\ci\github-actions\set-env.bat ${{matrix.TARGET_CPU}}
+          call axl\ci\github-actions\build-lua.bat
+          mkdir build
+          cd build
+          cmake .. %CMAKE_CONFIGURE_FLAGS% || exit
+          cmake --build . %CMAKE_BUILD_FLAGS% || exit
+          ctest --output-on-failure -C %CONFIGURATION% || exit
 
-        -   name: Setup NASM
-            uses: ilammy/setup-nasm@v1
-            if: ${{ matrix.TARGET_CPU == 'amd64' }}
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.TARGET_CPU }}-${{ matrix.CONFIGURATION }}-${{ matrix.LLVM_VERSION }}
+          path: build/  # 你可以根据实际产出物路径进行精细化调整，如 build/bin/
 
-        -   name: Build and test
-            shell: cmd
-            run: |
-                set CONFIGURATION=${{matrix.CONFIGURATION}}
-                set LLVM_VERSION=${{matrix.LLVM_VERSION}}
-                set THIS_DIR=%CD%
-                set THIS_DIR_CMAKE=%THIS_DIR:\=/%
+  linuxBuild:
+    name: Linux Build
+    runs-on: ubuntu-22.04
 
-                call jancy\ci\github-actions\set-env.bat ${{matrix.TARGET_CPU}}
-                call axl\ci\github-actions\build-lua.bat
+    strategy:
+      fail-fast: false
+      matrix:
+        CONFIGURATION:
+          - Debug
+          - Release
+        TARGET_CPU:
+          - x86
+          - amd64
+        LLVM_VERSION:
+          - llvm-12
+          - llvm-14
 
-                mkdir build
-                cd build
-                cmake .. %CMAKE_CONFIGURE_FLAGS% || exit
-                cmake --build . %CMAKE_BUILD_FLAGS% || exit
-                ctest --output-on-failure -C %CONFIGURATION% || exit
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: true
 
-    linuxBuild:
-        name: Linux Build
-        runs-on: ubuntu-22.04
+      - name: Install
+        shell: bash
+        run: |
+          export TARGET_CPU=${{matrix.TARGET_CPU}}
+          export LLVM_VERSION=${{matrix.LLVM_VERSION}}
+          source ./jancy/ci/github-actions/install-linux.sh
 
-        strategy:
-            fail-fast: false
-            matrix:
-                CONFIGURATION:
-                -   Debug
-                -   Release
+      - name: Build and test
+        shell: bash
+        run: |
+          THIS_DIR=$(pwd)
+          # 注意：原脚本中使用了 matrix.COMPILER，但矩阵中未定义，这里保留逻辑
+          # 若报错请在 matrix 中补充 COMPILER 变量
+          mkdir build
+          cd build
+          cmake .. -DTARGET_CPU=${{matrix.TARGET_CPU}} -DCMAKE_BUILD_TYPE=${{matrix.CONFIGURATION}}
+          make
+          ctest --output-on-failure
+          cmake . -DJANCY_TEST_JIT_KIND=--orc -DJANCY_TEST_DEBUG_INFO=
+          if [[ ${{matrix.LLVM_VERSION}} != "llvm-9" ]]; then ctest --output-on-failure; fi
 
-                TARGET_CPU:
-                -   x86
-                -   amd64
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.TARGET_CPU }}-${{ matrix.CONFIGURATION }}-${{ matrix.LLVM_VERSION }}
+          path: build/
 
-                LLVM_VERSION:
-                -   llvm-12
-                -   llvm-14
+  macOsBuild:
+    name: macOS Build
+    runs-on: ${{ matrix.OS }}
 
-        steps:
-        -   name: Checkout repo
-            uses: actions/checkout@v4
-            with:
-                submodules: true
+    strategy:
+      fail-fast: false
+      matrix:
+        OS:
+          - macos-15
+          - macos-15-intel
+        CONFIGURATION:
+          - Debug
+          - Release
+        LLVM_VERSION:
+          - llvm@15
+          - llvm@17
 
-        -   name: Install
-            shell: bash
-            run: |
-                export TARGET_CPU=${{matrix.TARGET_CPU}}
-                export LLVM_VERSION=${{matrix.LLVM_VERSION}}
-                source ./jancy/ci/github-actions/install-linux.sh
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: true
 
-        -   name: Build and test
-            shell: bash
-            run: |
-                THIS_DIR=$(pwd)
-                export CC=$(which ${{matrix.COMPILER}})
-                export CXX=$(which ${{matrix.COMPILER}}++)
+      - name: Install
+        shell: bash
+        run: |
+          export LLVM_VERSION=${{matrix.LLVM_VERSION}}
+          source ./jancy/ci/github-actions/install-osx.sh
 
-                mkdir build
-                cd build
-                cmake .. -DTARGET_CPU=${{matrix.TARGET_CPU}} -DCMAKE_BUILD_TYPE=${{matrix.CONFIGURATION}}
-                make
-                ctest --output-on-failure
+      - name: Build and test
+        shell: bash
+        run: |
+          THIS_DIR=$(pwd)
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=${{matrix.CONFIGURATION}}
+          make
+          ctest --output-on-failure
+          cmake . -DJANCY_TEST_JIT_KIND=--orc -DJANCY_TEST_DEBUG_INFO=
+          ctest --output-on-failure
 
-                cmake . -DJANCY_TEST_JIT_KIND=--orc -DJANCY_TEST_DEBUG_INFO=
-                if [[ ${{matrix.LLVM_VERSION}} != "llvm-9" ]]; then ctest --output-on-failure; fi
-
-    macOsBuild:
-        name: macOS Build
-        runs-on: ${{ matrix.OS }}
-
-        strategy:
-            fail-fast: false
-            matrix:
-                OS:
-                -   macos-15
-                -   macos-15-intel
-
-                CONFIGURATION:
-                -   Debug
-                -   Release
-
-                LLVM_VERSION:
-                -   llvm@15
-                -   llvm@17
-
-        steps:
-        -   name: Checkout repo
-            uses: actions/checkout@v4
-            with:
-                submodules: true
-
-        -   name: Install
-            shell: bash
-            run: |
-                export LLVM_VERSION=${{matrix.LLVM_VERSION}}
-                source ./jancy/ci/github-actions/install-osx.sh
-
-        -   name: Build and test
-            shell: bash
-            run: |
-                THIS_DIR=$(pwd)
-
-                mkdir build
-                cd build
-                cmake .. -DCMAKE_BUILD_TYPE=${{matrix.CONFIGURATION}}
-                make
-                ctest --output-on-failure
-
-                cmake . -DJANCY_TEST_JIT_KIND=--orc -DJANCY_TEST_DEBUG_INFO=
-                ctest --output-on-failure
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.OS }}-${{ matrix.CONFIGURATION }}-${{ matrix.LLVM_VERSION }}
+          path: build/

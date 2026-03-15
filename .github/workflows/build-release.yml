@@ -1,110 +1,202 @@
-name: Build & Release
+name: CI Build & Release
 
+# 触发条件：push / pull_request / 手动 / 每日夜间构建
 on:
   push:
+  pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * *" # UTC 03:00 每天夜间构建
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
 
-  build-linux:
-    runs-on: ubuntu-22.04
+  # ----------------------
+  # Windows Build Job
+  # ----------------------
+  windowsBuild:
+    name: Windows Build
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        CONFIGURATION: [Debug, Release]
+        TARGET_CPU: [x86, amd64]
+        LLVM_VERSION: [llvm-3.4.2, llvm-8.0.1]
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v5
       with:
-        submodules: recursive
+        submodules: true
 
     - name: Install
+      shell: cmd
+      run: |
+        set CONFIGURATION=${{matrix.CONFIGURATION}}
+        set LLVM_VERSION=${{matrix.LLVM_VERSION}}
+        call jancy\ci\github-actions\set-env.bat ${{matrix.TARGET_CPU}}
+        call jancy\ci\github-actions\install-windows.bat
+
+    - name: Setup NASM
+      uses: ilammy/setup-nasm@v1
+      if: ${{ matrix.TARGET_CPU == 'amd64' }}
+
+    - name: Build and Test
+      shell: cmd
+      run: |
+        set CONFIGURATION=${{matrix.CONFIGURATION}}
+        set LLVM_VERSION=${{matrix.LLVM_VERSION}}
+        set THIS_DIR=%CD%
+        call jancy\ci\github-actions\set-env.bat ${{matrix.TARGET_CPU}}
+        call axl\ci\github-actions\build-lua.bat
+        mkdir build
+        cd build
+        cmake .. %CMAKE_CONFIGURE_FLAGS% || exit
+        cmake --build . %CMAKE_BUILD_FLAGS% || exit
+        ctest --output-on-failure -C %CONFIGURATION% || exit
+
+    - name: Package
+      shell: cmd
+      run: |
+        mkdir dist
+        xcopy build\* dist\ /E /I /Y
+        powershell Compress-Archive -Path dist\* -DestinationPath jancy-windows-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}.zip
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}
+        path: jancy-windows-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}.zip
+
+
+  # ----------------------
+  # Linux Build Job
+  # ----------------------
+  linuxBuild:
+    name: Linux Build
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        CONFIGURATION: [Debug, Release]
+        TARGET_CPU: [x86, amd64]
+        LLVM_VERSION: [llvm-12, llvm-14]
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v5
+      with:
+        submodules: true
+
+    - name: Install Dependencies
       run: |
         sudo apt update
         sudo apt install -y build-essential cmake ninja-build zip
 
-    - name: Build
+    - name: Install
+      shell: bash
+      run: |
+        export TARGET_CPU=${{matrix.TARGET_CPU}}
+        export LLVM_VERSION=${{matrix.LLVM_VERSION}}
+        source ./jancy/ci/github-actions/install-linux.sh
+
+    - name: Build and Test
+      shell: bash
       run: |
         mkdir build
         cd build
-        cmake .. -DCMAKE_BUILD_TYPE=Release
+        cmake .. -DTARGET_CPU=${{matrix.TARGET_CPU}} -DCMAKE_BUILD_TYPE=${{matrix.CONFIGURATION}}
         make -j$(nproc)
+        ctest --output-on-failure
+        cmake . -DJANCY_TEST_JIT_KIND=--orc -DJANCY_TEST_DEBUG_INFO=
+        if [[ ${{matrix.LLVM_VERSION}} != "llvm-9" ]]; then ctest --output-on-failure; fi
 
     - name: Package
       run: |
         mkdir dist
         cp -r build/* dist/
         cd dist
-        zip -r jancy-linux-x64.zip .
+        zip -r jancy-linux-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}.zip .
 
-    - uses: actions/upload-artifact@v4
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
       with:
-        name: linux
-        path: dist/jancy-linux-x64.zip
+        name: linux-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}
+        path: dist/jancy-linux-${{matrix.CONFIGURATION}}-${{matrix.TARGET_CPU}}.zip
 
 
-  build-windows:
-    runs-on: windows-2022
+  # ----------------------
+  # macOS Build Job
+  # ----------------------
+  macosBuild:
+    name: macOS Build
+    runs-on: ${{ matrix.OS }}
+    strategy:
+      fail-fast: false
+      matrix:
+        OS: [macos-15, macos-15-intel]
+        CONFIGURATION: [Debug, Release]
+        LLVM_VERSION: [llvm@15, llvm@17]
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repo
+      uses: actions/checkout@v5
       with:
-        submodules: recursive
+        submodules: true
 
-    - name: Build
+    - name: Install Dependencies
+      shell: bash
       run: |
-        mkdir build
-        cd build
-        cmake .. -DCMAKE_BUILD_TYPE=Release
-        cmake --build . --config Release
-
-    - name: Package
-      run: |
-        mkdir dist
-        copy build\Release\* dist\
-        powershell Compress-Archive dist jancy-windows-x64.zip
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: windows
-        path: jancy-windows-x64.zip
-
-
-  build-macos:
-    runs-on: macos-latest
-
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: recursive
+        brew install cmake
 
     - name: Install
-      run: brew install cmake
+      shell: bash
+      run: |
+        export LLVM_VERSION=${{matrix.LLVM_VERSION}}
+        source ./jancy/ci/github-actions/install-osx.sh
 
-    - name: Build
+    - name: Build and Test
+      shell: bash
       run: |
         mkdir build
         cd build
-        cmake .. -DCMAKE_BUILD_TYPE=Release
+        cmake .. -DCMAKE_BUILD_TYPE=${{matrix.CONFIGURATION}}
         make -j$(sysctl -n hw.ncpu)
+        ctest --output-on-failure
+        cmake . -DJANCY_TEST_JIT_KIND=--orc -DJANCY_TEST_DEBUG_INFO=
+        ctest --output-on-failure
 
     - name: Package
+      shell: bash
       run: |
         mkdir dist
         cp -r build/* dist/
         cd dist
-        zip -r jancy-macos.zip .
+        zip -r jancy-macos-${{matrix.CONFIGURATION}}.zip .
 
-    - uses: actions/upload-artifact@v4
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
       with:
-        name: macos
-        path: dist/jancy-macos.zip
+        name: macos-${{matrix.CONFIGURATION}}
+        path: dist/jancy-macos-${{matrix.CONFIGURATION}}.zip
 
 
+  # ----------------------
+  # Release Job
+  # ----------------------
   release:
-    needs: [build-linux, build-windows, build-macos]
+    name: Create Nightly Release
+    needs: [windowsBuild, linuxBuild, macosBuild]
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/download-artifact@v4
+    - name: Download Artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: release-files
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
@@ -112,7 +204,4 @@ jobs:
         tag_name: nightly
         name: Nightly Build
         prerelease: true
-        files: |
-          linux/jancy-linux-x64.zip
-          windows/jancy-windows-x64.zip
-          macos/jancy-macos.zip
+        files: release-files/**/*
